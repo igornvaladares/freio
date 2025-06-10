@@ -18,18 +18,17 @@ const int correntePin2 = A1; // Sensor da pont H
 // === TEMPOS ===
 const int TEMPO_50 = 1000;   // ms
 const int TEMPO_100 = 4000; // ms
-const int UM_SEGUNDO = 1000; //ms
+const int MEIO_SEGUNDO = 200; //ms
 
 // === EEPROM ===
 const int EEPROM_ADDR = 0;
 
 // === ESTADOS ===
+bool freiando = true;
 bool freiado = false;
-bool naoApertandoBotao = false;
 bool bloqueadoAcionamentoAutomatico = false;
-bool esperandoSoltar = false;
-unsigned long tempoPressionado = 0;
 
+int intensidadeUsada; 
 void setup() {
   
   pinMode(L_PWM, OUTPUT);
@@ -55,51 +54,54 @@ void setup() {
   
 }
 
-void aguardarOuSoltarBotao(float tempoAgurde, bool pressionandoBotao= false) {
+void aguardarOuSoltarBotao(float tempoAgurde) {
     long tempoInicio = millis();
     Serial.print("aguarde  por:");
     Serial.print(tempoAgurde);
     Serial.println(" ou solte botao");
     // Se ultrapassar o tempoAguarde ou botão foi solto
     while (((millis() - tempoInicio) <= tempoAgurde)){
-        if  (pressionandoBotao && digitalRead(botaoPin)){
+        if  (digitalRead(botaoPin)){
             break;
         }   
         float corrente  = lerCorrente(correntePin1,correntePin2);
     }
       
 }
-void aguardarOuClicarBotao(float tempoAgurde) {
+
+void aguardar(float tempoAgurde) {
     long tempoInicio = millis();
-    Serial.print("aguarde por:");
-    Serial.print(tempoAgurde);
-    Serial.println(" ou click");
-    // Se ultrapassar o tempoAguarde ou botão foi clicado
-    delay(300);
-    while (((millis() - tempoInicio) <= tempoAgurde) && botaoNaoApertado()){
+    Serial.print("aguarde  por:");
+    Serial.println(tempoAgurde);
+    // Se ultrapassar o tempoAguarde ou botão foi solto
+    while (((millis() - tempoInicio) <= tempoAgurde)){
         float corrente  = lerCorrente(correntePin1,correntePin2);
     }
       
 }
 
 void loop() {
+
   verificarAcionamentoManual();
   verificarAcionamentoAutomatico();
+
 } 
 
 // === ATIVA FREIO E ENTRA EM SLEEP ===
-void freiar(int intensidade, bool pressionandoBotao = false) {
-  if (freiado) return;
+void freiar(int intensidade) {
+ // if (freiado) return;
 
+  intensidadeUsada = intensidade;
   Serial.print("Ativando freio com intensidade ");
   Serial.println(intensidade);
 
-  // pressionandoBotao é quando clika no botão e segura. Essa situação é para freiar(Aumentar a pressão) , mesmo já freiado.
-  // Então o parametro é FALSE para simular como se não estivesse freiado
-  iniciar(freiado);
+  iniciar(freiando);
 
   // Se intensidade for 100% ou 50%
-  aguardarOuSoltarBotao(intensidade == 100 ? TEMPO_100 : TEMPO_50,pressionandoBotao);
+  if (intensidadeUsada == 100)
+    aguardarOuSoltarBotao(TEMPO_100);
+  else
+    aguardar(TEMPO_50);
   
   finalizarFreiar();
   
@@ -107,72 +109,85 @@ void freiar(int intensidade, bool pressionandoBotao = false) {
 
 
 // === ATIVA FREIO E ENTRA EM SLEEP ===
-void iniciarFreiar(int intensidade, bool pressionandoBotao = false) {
+void iniciarFreiar() {
   if (freiado) return;
+  intensidadeUsada = 50; // 50%
+  Serial.print("Ativando freio com intesidade : ");
+  Serial.println(intensidadeUsada);
 
-  Serial.print("Ativando freio com intensidade ");
-  Serial.println(intensidade);
-
-  // pressionandoBotao é quando clika no botão e segura. Essa situação é para freiar(Aumentar a pressão) , mesmo já freiado.
-  // Então o parametro é FALSE para simular como se não estivesse freiado
-  iniciar(pressionandoBotao ? !freiado:  freiado);
-
-  // Se intensidade for 100% ou 50%
-  aguardarOuSoltarBotao(intensidade == 100 ? TEMPO_100 : TEMPO_50,pressionandoBotao);
-  
+  iniciar(freiando);
+  aguardar(TEMPO_50);
   digitalWrite(ledStatus, HIGH);
 }
 
 void finalizarFreiar() {
+  
   freiado = true;
-  naoApertandoBotao = true; 
   EEPROM.write(EEPROM_ADDR, 1);
   // Para e entra em Sleep
   parar();
+  entrarSleep(); 
+
 }
 
 // === LEITURA DO BOTÃO COM CLIQUE CURTO/LONGO ===
 void verificarAcionamentoManual() {
   bool peFreio = digitalRead(sensorPeFreioPin) == LOW;
   peFreio = true;
-  Serial.print("FREIADO:");
-  Serial.println(freiado);
-  if (peFreio && botaoApertado() && naoApertandoBotao){
-     tempoPressionado = millis();
-     naoApertandoBotao = false;
-  }
-
   if (peFreio && botaoApertado()){
-    long duracao = millis() - tempoPressionado;
+    long tempoInicio = millis();
+    // Se ultrapassar o tempoAguarde ou botão foi solto
+    while (botaoApertado()){
+       if ((millis() - tempoInicio) >= MEIO_SEGUNDO){
+            freiar(100);
+            return;
+       }  
+    }
     if (freiado){
         desativarFreio();
         bloqueadoAcionamentoAutomatico = true;
     }else{
-        if (duracao <= UM_SEGUNDO){
-            iniciarFreiar(50); 
-            if (botaoNaoApertado())
-                finalizarFreiar();
-        }else{
-            freiar(100, true);
-         }
-    }
+        iniciarFreiar(); 
+        if (botaoNaoApertado())
+            finalizarFreiar();
    
-  } 
+       }
+  }
+  /*
+  if (peFreio && botaoApertado() && naoApertandoBotao){
+     tempoPressionado = millis();
+     naoApertandoBotao = false;
+  }
+  if (peFreio && botaoApertado()){
+    long duracao = millis() - tempoPressionado;
+    if (freiado){
+      desativarFreio();
+      bloqueadoAcionamentoAutomatico = true;
+    }else{
+      if (duracao <= MEIO_SEGUNDO){
+        iniciarFreiar(); 
+        if (botaoNaoApertado())
+          finalizarFreiar();
+        else
+          freiar(100);
+        
+       }
+   }
+  }
+  */
 }
-
 // === AÇÃO AUTOMÁTICA DE SEGURANÇA ===
 void verificarAcionamentoAutomatico() {
  
   bool portaAberta = digitalRead(sensorPortaPin) == LOW;
   bool carroParado = detectarCarroParado();
-
   if (portaAberta && carroParado && !freiado && !bloqueadoAcionamentoAutomatico) {
      Serial.println("Ação automática de Segurança: Ativando freio!");
      freiar(50);
      // Entra em Sleep e só volta com click no botão
   }
 // Permitir que o modo automatico volte a funcionar
-  bloqueadoAcionamentoAutomatico = !(!portaAberta && !carroParado && !freiado);
+  bloqueadoAcionamentoAutomatico = (!portaAberta && !carroParado && !freiado);
   
 }
 
@@ -196,13 +211,12 @@ bool detectarCarroParado() {
 void desativarFreio() {
   if (!freiado) return;
 
-  iniciar(freiado);
+  iniciar(!freiando);
   Serial.println("Desativando freio...");
 
-  aguardarOuSoltarBotao(TEMPO_100);
+  aguardar(intensidadeUsada == 100 ? TEMPO_100: TEMPO_50);
   freiado = false;
 
-  naoApertandoBotao = true; 
   digitalWrite(ledStatus, LOW);
   EEPROM.write(EEPROM_ADDR, 0);
   parar();
@@ -238,7 +252,6 @@ void iniciar(bool sentido){
 
 void parar(){
     analogWrite(PWM, 0); 
-    entrarSleep(); 
 }
 bool botaoApertado(){
   return digitalRead(botaoPin) == LOW;   
@@ -265,7 +278,5 @@ void entrarSleep() {
 
 // === INTERRUPÇÃO DE ACORDAR ===
 void wakeUp() {
-   //Serial.println("ACRODANDO");
-  // return;
   // Nada a fazer — apenas acorda
 }
