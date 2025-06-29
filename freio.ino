@@ -1,12 +1,10 @@
 #include <EEPROM.h>
-#include <avr/sleep.h>
-#include <avr/interrupt.h>
-
 // === PINOS ===
 const int L_PWM = 12;
 const int R_PWM = 13;
 const int PWM = 11;  // Ligar os pinos R_ENA e L_ENA no D11 do arduino
 const int sinalPainelStatus = 9;
+
 const int ledStatus = 10;
 const int botaoPin = 2;             // Botão (INT0)
 const int sensorPortaPin = 8;       
@@ -15,6 +13,7 @@ const int sensorCarroParadoPin = 3; // Carro parado = sinal pulsante
 
 const int correntePin1 = A0; // Sensor da pont H
 const int correntePin2 = A1; // Sensor da pont H
+const int entradaStatusCarro = A4; // Dados vindo do arquino de cambio
 
 // === TEMPOS ===
 const int TEMPO_50 = 1000;   // ms
@@ -28,11 +27,13 @@ const int EEPROM_ADDR = 0;
 // === ESTADOS ===
 bool freiando = true;
 bool freiado = false;
+int PARADO_EM_NEUTRO = 1;
+int PARADO_ENGRENADO = 2;
+int EM_MOVIMENTO = 3;
+
 bool bloqueadoAcionamentoAutomatico = false;
 
- 
 void setup() {
-  
   pinMode(L_PWM, OUTPUT);
   pinMode(R_PWM, OUTPUT);
   pinMode(PWM, OUTPUT);
@@ -47,18 +48,12 @@ void setup() {
 
   Serial.begin(9600);
   Serial.println("INICIADO.");
-
-  attachInterrupt(digitalPinToInterrupt(botaoPin), wakeUp, FALLING);
-  
-  attachInterrupt(digitalPinToInterrupt(sensorCarroParadoPin), wakeUp, FALLING);
   
   freiado = EEPROM.read(EEPROM_ADDR) > 0;
   digitalWrite(ledStatus, freiado);
   
   digitalWrite(sinalPainelStatus, !freiado);
-  
-  entrarSleep();
-  
+    
 }
 
 void aguardarOuSoltarBotao(float tempoAgurde) {
@@ -97,7 +92,7 @@ void aguardar(float tempoAgurde) {
 }
 
 void loop() {
-
+  
   verificarAcionamentoManual();
   verificarAcionamentoAutomatico();
 
@@ -142,7 +137,6 @@ void finalizarFreiar(int intensidade) {
   // Para e entra em Sleep
   parar();
   digitalWrite(ledStatus, true);
-  entrarSleep(); 
 
 }
 
@@ -160,7 +154,7 @@ void verificarAcionamentoManual() {
        }  
     }
     if (freiado){
-        desativarFreio();
+        desativarFreio(true);
     }else{
         iniciarFreiar(); 
         if (botaoNaoApertado())
@@ -170,43 +164,69 @@ void verificarAcionamentoManual() {
   }
 }
 // === AÇÃO AUTOMÁTICA DE SEGURANÇA ===
-void verificarAcionamentoAutomatico() {
- 
+void verificarAcionamentoAutomatico() { 
+  bool peFreio = digitalRead(sensorPeFreioPin) == LOW;
   bool portaAberta = digitalRead(sensorPortaPin) == LOW;
-  bool carroParado = detectarCarroParado();
-  if (portaAberta && carroParado && !freiado && !bloqueadoAcionamentoAutomatico) {
-     Serial.println("Ação automática de Segurança: Ativando freio!");
+  bool portaFechada = digitalRead(sensorPortaPin) == HIGH;
+  
+  int statusCarro = detectarStatusCarro();
+  Serial.print("Status CArro:");
+  Serial.println(statusCarro);
+  
+  //if (portaAberta && carroParado && !freiado && !bloqueadoAcionamentoAutomatico) {
+  if (portaAberta && !peFreio && statusCarro== PARADO_ENGRENADO && !freiado && !bloqueadoAcionamentoAutomatico) { // CARRO PARADO EM DRIVE
+     Serial.println("Ação automática de Segurança: Porta Aberta, Carro parado em Drive");
      freiar(50);
      // Entra em Sleep e só volta com click no botão
   }
+  if (statusCarro == PARADO_EM_NEUTRO && !freiado && peFreio && !bloqueadoAcionamentoAutomatico) { // CARRO PARADO EM N
+     Serial.println("Ação automática de Segurança: Carro parado em N!");
+     freiar(50);
+     // Entra em Sleep e só volta com click no botão
+  }
+  if (statusCarro == PARADO_ENGRENADO && portaFechada && freiado && peFreio && !bloqueadoAcionamentoAutomatico) { // CARRO PARADO EM DRIVE
+     Serial.println("Ação automática de Segurança: Carro parado em Drive");
+     desativarFreio(false);
+  }
+
+
 // Permitir que o modo automatico volte a funcionar
-if (!carroParado && !portaAberta && !freiado)
+if (statusCarro == EM_MOVIMENTO &&  portaFechada && !freiado)
+//if (!carroParado && !portaAberta && !freiado)
    bloqueadoAcionamentoAutomatico = false;
   
   
 }
 
-// === DETECÇÃO DE SINAL PULSANTE (CARRO PARADO) ===
-bool detectarCarroParado() {
-  unsigned long start = millis();
-  bool ultimoEstado = HIGH;
-  int pulsoCount = 0;
+// === DETECÇÃO DE CARRO PARADO N e CARRO PARADO ENGATADO) ===
+signed char detectarStatusCarro() {
+    int leituraStatusCarro = leituraMediaAnologica(entradaStatusCarro);
+    int voltStatusCarro = map(leituraStatusCarro,0,1023,0,500);
+    //Serial.print("Volts:");
+    //Serial.println(leituraStatusCarro);
 
-  while (millis() - start < 100) {
-    bool estadoAtual = digitalRead(sensorCarroParadoPin);
-    if (ultimoEstado == HIGH && estadoAtual == LOW) {
-      pulsoCount++; // Contagem só na transição 1 -> 0
-    } 
-     ultimoEstado = estadoAtual;
+    signed char statusCarro =0;
+    switch (voltStatusCarro) {
+
+        case 101 ... 200:
+          statusCarro = PARADO_EM_NEUTRO; // Carro Parado em N
+        break;
+        case 201 ... 300:
+          statusCarro = PARADO_ENGRENADO;// Carro Parado engatado
+          break;
+        case 301 ... 400:
+          statusCarro =EM_MOVIMENTO;// Carro em movimento
+        break;
     }
-    return pulsoCount < 2; // Pelo menos 2 pulsos em 100ms
+
+    return statusCarro;
 }
 
 // === DESATIVA FREIO ===
-void desativarFreio() {
+void desativarFreio(bool desativarAcionamentoAutomatico) {
   if (!freiado) return;
 
-  bloqueadoAcionamentoAutomatico = true;
+  bloqueadoAcionamentoAutomatico = desativarAcionamentoAutomatico;
 
   iniciar(!freiando);
   Serial.println("Desativando freio...");
@@ -226,10 +246,11 @@ void desativarFreio() {
 float leituraMediaAnologica(int pinAnalogico){
 
   long soma=0;
-   for(int i=1;i<=10;i++){
+   for(int i=1;i<=100;i++){
        soma = soma + analogRead(pinAnalogico);
+       delayMicroseconds(100);
     }
-  return soma/10;
+  return soma/100;
 
 }
 
@@ -260,24 +281,4 @@ bool botaoApertado(){
 
 bool botaoNaoApertado(){
   return digitalRead(botaoPin) == HIGH;   
-}
-
-// === MODO SLEEP PROFUNDO ===
-void entrarSleep() {
-  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
-  sleep_enable();
-
-  noInterrupts();
-  EIFR = bit(INTF0); // Limpa flag INT0
-  interrupts();
-
-  sleep_cpu();
-  // Ao acordar, volta de onde parou
-  sleep_disable();
-  //Serial.println("Acordou do modo sleep.");
-}
-
-// === INTERRUPÇÃO DE ACORDAR ===
-void wakeUp() {
-  // Nada a fazer — apenas acorda
 }
