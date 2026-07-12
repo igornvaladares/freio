@@ -35,7 +35,7 @@ const int TEMPO_MAXIMO_ACIONAMENTO = 2000;   // ms Click Curto
 const int TEMPO_DESTRAVA = 750;   // ms Click Curto
 
 const int CORRENTE_50 = 6;   // ms Click Curto
-const int CORRENTE_100 = 10;  // ms Click Longo
+const int CORRENTE_100 = 12;  // ms Click Longo
 
 const int QUARTO_SEGUNDO = 250; //ms
 long ultimoPiscar = 0;
@@ -51,6 +51,12 @@ bool SENTIDO_FREIANDO = true;
 
 bool freiado = false;
 bool correnteNoLimite =false;
+
+struct StatusCarro {
+  uint8_t atual;
+  uint8_t anterior;
+};
+
 uint8_t PARADO_EM_NEUTRO = 1;
 uint8_t PARADO_ENGRENADO = 2;
 uint8_t EM_MOVIMENTO = 3; // a partir de 3km/h
@@ -95,7 +101,7 @@ void loop() {
  // Serial.print("A1:");
  // Serial.println(analogRead(R_IS));
   
-  uint8_t statusCarro = detectarStatusCarro();
+  StatusCarro statusCarro = detectarStatusCarro();
   
   verificarAcionamentoManual(statusCarro);
   verificarAcionamentoAutomatico(statusCarro);
@@ -104,19 +110,23 @@ void loop() {
 
 } 
 // === CONDICÕES PARA BEEPAR ===
-void gerenciarNotificacao(uint8_t statusCarro){
+void gerenciarNotificacao(StatusCarro statusCarro){
   if (freiado){
-    if (statusCarro == ENGRENADO_PISANDO_ACELERADOR || statusCarro == EM_MOVIMENTO ){
+    if (statusCarro.atual == ENGRENADO_PISANDO_ACELERADOR || statusCarro.atual == EM_MOVIMENTO ){
          piscarLed();
-         beepar();
+         beeparERROR();
     }
-   }else reiniciarNotificacoes(); 
+  }else 
+      if (statusCarro.atual == PARADO_EM_NEUTRO){
+          piscarLed();
+          beeparWARN();
+       }else limparNotificacoes(); 
 }
 // === APAGAR LED E BEET ===
 
-void reiniciarNotificacoes(){
+void limparNotificacoes(){
   noTone(beepStatus);
-  digitalWrite(ledStatus, freiado);
+  digitalWrite(ledStatus, 0);
 }
 // === ATIVA FREIO ===
 void freiarAteFim(int intensidade) {
@@ -158,7 +168,7 @@ void finalizarFreiar(int intensidade) {
 }
 
 // === LEITURA DO BOTÃO COM CLIQUE CURTO/LONGO ===
-void verificarAcionamentoManual(uint8_t statusCarro) {
+void verificarAcionamentoManual(StatusCarro statusCarro) {
   bool peFreio = digitalRead(sensorPeFreioPin) == LOW;
   if (botaoApertado()){
      long tempoInicio = millis();
@@ -180,7 +190,7 @@ void verificarAcionamentoManual(uint8_t statusCarro) {
            }
       }
     }else{// FREIO NAO ACIONADO
-      if (isParado(statusCarro) && peFreio){ // Só aciona freio 50% se estiver PARADO e com pé no  freio. 
+      if (statusCarro.atual!= EM_MOVIMENTO && peFreio){ // Só aciona freio 50% se estiver PARADO e com pé no  freio. 
         bloqueadoAcionamentoAutomatico = true;
         iniciarFreiar(); 
         if (botaoNaoApertado())
@@ -195,20 +205,19 @@ void verificarAcionamentoManual(uint8_t statusCarro) {
   
 }
 // === AÇÃO AUTOMÁTICA DE SEGURANÇA ===
-void verificarAcionamentoAutomatico(uint8_t statusCarro) { 
+void verificarAcionamentoAutomatico(StatusCarro statusCarro) { 
   bool apertandoFreio = digitalRead(sensorPeFreioPin) == LOW;
   bool portaAberta = digitalRead(sensorPortaPin) == LOW;
   bool portaFechada = !portaAberta;
   bool naofreiado = !freiado;
   bool naoApertandoFreio = !apertandoFreio;
-  bool pisarAcelerador = (statusCarro == ENGRENADO_PISANDO_ACELERADOR && portaFechada);
-  bool engatarMarchaParado = statusCarro == PARADO_ENGRENADO && portaFechada && freiado && apertandoFreio && !bloqueadoAcionamentoAutomatico;
-  bool abrirPortaInesperadamenteParado = portaAberta && naoApertandoFreio && statusCarro == PARADO_ENGRENADO && naofreiado && !bloqueadoAcionamentoAutomatico;
-  bool colocarEmNeutroParado = statusCarro == PARADO_EM_NEUTRO && naofreiado && apertandoFreio && !bloqueadoAcionamentoAutomatico;
-  bool emLadeira;  //verificarLadeira();
-  emLadeira = false;
-  bool freiarAutomaticoQuandoParar =  statusCarro == PARADO_ENGRENADO && apertandoFreio &&  emLadeira && naofreiado && !bloqueadoAcionamentoAutomatico;
-  if (abrirPortaInesperadamenteParado  || colocarEmNeutroParado ||  freiarAutomaticoQuandoParar) {
+  bool pisarAcelerador = (statusCarro.atual == ENGRENADO_PISANDO_ACELERADOR && portaFechada);
+  bool engatarMarchaParado = statusCarro.atual == PARADO_ENGRENADO && portaFechada && freiado && apertandoFreio && !bloqueadoAcionamentoAutomatico;
+  bool abrirPortaInesperadamenteParado = portaAberta && naoApertandoFreio && statusCarro.atual == PARADO_ENGRENADO && naofreiado && !bloqueadoAcionamentoAutomatico;
+  bool colocarEmNeutroParado = statusCarro.atual == PARADO_EM_NEUTRO && naofreiado && apertandoFreio && !bloqueadoAcionamentoAutomatico;
+  bool autoHold =  statusCarro.atual == PARADO_ENGRENADO && statusCarro.anterior == EM_MOVIMENTO && pisouEsoltouFreio(apertandoFreio) && naofreiado && !bloqueadoAcionamentoAutomatico;
+ 
+  if (abrirPortaInesperadamenteParado  || colocarEmNeutroParado || autoHold) {
      freiarAteFim(50);
   }
 
@@ -220,17 +229,29 @@ void verificarAcionamentoAutomatico(uint8_t statusCarro) {
   }
 
 // Permitir que o modo automatico volte a funcionar
-  if (statusCarro == EM_MOVIMENTO &&  portaFechada && !freiado){
+  if (statusCarro.atual == EM_MOVIMENTO &&  portaFechada && !freiado){
      bloqueadoAcionamentoAutomatico = false;
-    // Serial.println("Ação automática de Segurança DESBLOQUEADA");
   }
   
 }
+bool pisouEsoltouFreio(bool freioPressionadoAgora ) {
+  static bool freioEstaPisado = false;
+  static unsigned long instanteUltimaPisada = 0;
+  static  unsigned long agora;
+  if (freioPressionadoAgora) {
+    // Obtém o tempo atual em milissegundos
+    agora = millis();
+    return ((agora - instanteUltimaPisada) <= 250);
+    
+  }else instanteUltimaPisada = agora;       // Salva o momento que soltou da pisada
+  
+}
 
-uint8_t detectarStatusCarro() {
-  static uint8_t statusCarro =0;
+StatusCarro detectarStatusCarro() {
+  static StatusCarro statusCarro = {0, 0};
   if (receptorStatusCarro.available()){
-      statusCarro = receptorStatusCarro.read();
+       statusCarro.anterior = statusCarro.atual;
+       statusCarro.atual = receptorStatusCarro.read();
       //Serial.print("Status CArro:");
       //Serial.println(statusCarro);
   
@@ -238,9 +259,6 @@ uint8_t detectarStatusCarro() {
   return statusCarro;
 }
 
-bool isParado(uint8_t statusCarro){
-    return statusCarro != EM_MOVIMENTO; 
-}
 // === DESATIVA FREIO ===
 void desativarFreio() {
   if (!freiado) return;
@@ -340,13 +358,35 @@ void piscarLed(){
      }
   
 }
-void beepar(){
+void beeparERROR(){
      if (millis() - ultimoBeep >=150){
          ultimoBeep = millis();
         if (beepando) tone(beepStatus,2000); else noTone(beepStatus);
         beepando=!beepando;
      }
   
+}
+
+void beeparWARN() {
+    static unsigned long ultimoCiclo = 0;
+    unsigned long tempoAtual = millis();
+    unsigned long tempoNoCiclo = (tempoAtual - ultimoCiclo) % 1000;
+    
+    // Reinicia o ciclo a cada 1 segundo
+    if (tempoAtual - ultimoCiclo >= 1000) {
+        ultimoCiclo = tempoAtual;
+    }
+    
+    // Dois bipes de 100ms com 200ms entre eles
+    if (tempoNoCiclo < 100) {
+        tone(beepStatus, 2000);  // Primeiro beep
+    } else if (tempoNoCiclo >= 100 && tempoNoCiclo < 300) {
+        noTone(beepStatus);       // Pausa de 300ms
+    } else if (tempoNoCiclo >= 300 && tempoNoCiclo < 400) {
+        tone(beepStatus, 2000);   // Segundo beep
+    } else {
+        noTone(beepStatus);       // Silêncio até completar 1 segundo
+    }
 }
 /*
 float lerAcelerometro() {
